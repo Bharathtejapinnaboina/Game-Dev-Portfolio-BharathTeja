@@ -1,0 +1,156 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Mini Game | Bharath Teja</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body{margin:0;font-family:Arial,Helvetica,sans-serif;background:#111;color:#f1f1f1;display:flex;align-items:center;justify-content:center;height:100vh}
+    #game-container{width:420px;height:640px;box-shadow:0 6px 20px rgba(0,0,0,0.6);background:#000;border-radius:8px;overflow:hidden}
+    @media (max-width:480px){#game-container{width:360px;height:640px}}
+  </style>
+
+  <!-- Phaser CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.55.2/phaser.min.js"></script>
+</head>
+<body>
+  <div id="game-container"></div>
+
+<script>
+/* ---------- embedded assets (data URIs) ---------- */
+/* (your data URIs here — truncated in message examples; keep full base64 strings) */
+const ASSETS = {
+  bg: "data:image/png;base64,iVBORw0K... (your full base64 here) ...",
+  player: "data:image/png;base64,iVBORw0K... (your full base64 here) ...",
+  pipe: "data:image/png;base64,iVBORw0K... (your full base64 here) ..."
+};
+
+/* ---------- convert data URI to blob URL safely ---------- */
+function dataUriToBlobUrl(dataUri){
+  // If already a blob/url, just return
+  if(!dataUri || typeof dataUri !== 'string') return dataUri;
+
+  // Quick sanity: if it's a normal http(s) url, return directly
+  if(/^https?:\/\//i.test(dataUri) || dataUri.startsWith('blob:')) return dataUri;
+
+  // Split metadata and base64 content
+  const parts = dataUri.split(',');
+  if(parts.length < 2) return dataUri;
+
+  const meta = parts[0]; // e.g. data:image/png;base64
+  let b64 = parts[1];
+
+  // CLEAN the base64: remove any chars not valid in base64 (whitespace, linebreaks, etc.)
+  b64 = b64.replace(/[^A-Za-z0-9+/=]/g, '');
+
+  // Try decode via atob (most browsers)
+  try {
+    const byteString = atob(b64);
+    const ab = new ArrayBuffer(byteString.length);
+    const ia = new Uint8Array(ab);
+    for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
+    const mimeMatch = meta.match(/data:(.*?);base64/);
+    const mime = mimeMatch ? mimeMatch[1] : 'image/png';
+    const blob = new Blob([ab], { type: mime });
+    return URL.createObjectURL(blob);
+  } catch (e) {
+    // Fallback: try letting browser fetch decode the data URI (some browsers support it)
+    // This fallback constructs a blob using fetch on the dataUri (returns a Promise)
+    // But Phaser's preload expects a synchronous URL. To keep things simple, create an image element,
+    // draw to canvas and convert to blob synchronously via toDataURL -> atob fallback already tried.
+    // So if atob fails we still attempt a final safe fallback using an <img> element and canvas.
+    // NOTE: This fallback is rare; cleaned base64 should work in 99% cases.
+    try {
+      const img = new Image();
+      img.src = dataUri;
+      // create a temporary canvas to draw the image when it's loaded - but this is async.
+      // To keep preload synchronous we create an object URL from a canvas only after load.
+      // Phaser would start loading before that unless we pre-generate blob urls for all assets beforehand.
+      // In practice the sanitized atob branch above should succeed; if not, return original dataUri and hope loader accepts it.
+      return dataUri;
+    } catch (err) {
+      return dataUri;
+    }
+  }
+}
+
+/* ---------- Phaser game ---------- */
+const config = {
+  type: Phaser.AUTO,
+  width: 420,
+  height: 640,
+  physics: { default: 'arcade', arcade: { gravity: { y: 800 }, debug: false } },
+  scene: { preload: preload, create: create, update: update },
+  parent: 'game-container'
+};
+const game = new Phaser.Game(config);
+
+let player, cursors, pipes, score = 0, scoreText, gameOver=false, startText;
+
+function preload(){
+  // convert each data URI to a blob URL before loading
+  const bgUrl = dataUriToBlobUrl(ASSETS.bg);
+  const playerUrl = dataUriToBlobUrl(ASSETS.player);
+  const pipeUrl = dataUriToBlobUrl(ASSETS.pipe);
+
+  this.load.image('bg', bgUrl);
+  this.load.image('player', playerUrl);
+  this.load.image('pipe', pipeUrl);
+}
+
+function create(){
+  this.add.tileSprite(210,320,420,640,'bg');
+  player = this.physics.add.sprite(100, 300, 'player').setScale(0.45);
+  player.setCollideWorldBounds(true);
+  player.setGravityY(0);
+
+  startText = this.add.text(210, 300, 'Tap/Space to Start', { fontSize:'20px', fill:'#fff' }).setOrigin(0.5);
+  pipes = this.physics.add.group();
+  scoreText = this.add.text(16, 16, 'Score: 0', { fontSize:'20px', fill:'#fff' });
+
+  this.input.on('pointerdown', flap, this);
+  cursors = this.input.keyboard.createCursorKeys();
+  this.input.keyboard.on('keydown-SPACE', flap, this);
+
+  this.time.addEvent({ delay: 1500, callback: spawnPipes, callbackScope: this, loop: true });
+  this.physics.add.collider(player, pipes, hitPipe, null, this);
+}
+
+function update(){
+  if(gameOver) return;
+  if(player.body.velocity.y > 5) player.setAngle(10); else player.setAngle(-10);
+  if(cursors.up.isDown) flap();
+}
+
+function flap(){
+  if(gameOver){
+    gameOver = false; score = 0; scoreText.setText('Score: 0');
+    player.x = 100; player.y = 300;
+    player.setVelocityY(0); player.setGravityY(800);
+    pipes.clear(true,true); startText.setVisible(false);
+    return;
+  }
+  if(startText.visible) startText.setVisible(false);
+  player.setVelocityY(-330); player.setGravityY(800);
+}
+
+function spawnPipes(){
+  if(startText.visible) return;
+  const gap = 140;
+  const min = 120, max = 400;
+  const topY = Phaser.Math.Between(min, max);
+  const topPipe = pipes.create(460, topY - gap/2 - 320, 'pipe').setOrigin(0.5,1);
+  const bottomPipe = pipes.create(460, topY + gap/2 + 320, 'pipe').setOrigin(0.5,0);
+  topPipe.body.allowGravity = false; bottomPipe.body.allowGravity = false;
+  topPipe.setVelocityX(-200); bottomPipe.setVelocityX(-200);
+  this.time.addEvent({ delay: 1200, callback: ()=> { if(!gameOver){ score += 1; scoreText.setText('Score: ' + score); } }, callbackScope: this, loop: false });
+}
+
+function hitPipe(){
+  gameOver = true;
+  startText.setText('Game Over - Tap/Space to Restart'); startText.setVisible(true);
+  player.setVelocityY(0); player.setGravityY(0); pipes.setVelocityX(0);
+}
+</script>
+</body>
+</html>
